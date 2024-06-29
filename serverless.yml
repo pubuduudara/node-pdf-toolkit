@@ -1,0 +1,99 @@
+service: node-pdf-toolkit
+
+useDotenv: true
+
+plugins:
+  - serverless-offline
+
+# serverless optimization
+package:
+  individually: true
+
+provider:
+  name: aws
+  role: lambdaIAMRole
+  runtime: nodejs18.x
+  stage: ${opt:stage,'dev'}
+  environment:
+    APP_ENV: ${self:provider.stage}
+    S3_BUCKET: assests-${self:provider.stage,'dev'}
+    DB_HOST: ${env:DB_HOST}
+    DB_USERNAME: ${env:DB_USERNAME}
+    DB_PASSWORD: ${env:DB_PASSWORD}
+    DB_NAME: ${env:DB_NAME}
+    SQS_QUEUE: node-pdf-toolkit-${self:provider.stage}-sqs-queue
+
+  deploymentBucket:
+    name: lambda-deployment-bucket-${self:custom.env.${self:provider.stage}.ENV_KEY, 'nonprod'}
+  vpcEndpointIds:
+    - vpc-xxxx
+  vpc:
+    securityGroupIds:
+      - ${self:custom.env.${self:provider.stage}.SG,'sg-xxx'}
+    subnetIds:
+      - ${self:custom.env.${self:provider.stage}.SN_ONE,'subnet-xxx'}
+      - ${self:custom.env.${self:provider.stage}.SN_TWO,'subnet-xxx'}
+
+functions:
+  handler:
+    handler: dist/index.handler
+    events:
+      - sqs:
+          arn: arn:aws:sqs:${opt:region, self:provider.region}:${self:custom.env.${self:provider.stage}.ACCOUNT_ID, '367202924266'}:${self:provider.environment.SQS_QUEUE}
+          batchSize: 1
+      - sqs:
+          arn: arn:aws:sqs:${opt:region, self:provider.region}:${self:custom.env.${self:provider.stage}.ACCOUNT_ID, '367202924266'}:${self:provider.environment.SQS_QUEUE}-dlq
+          batchSize: 1
+
+resources:
+  Resources:
+    lambdaIAMRole:
+      Type: "AWS::IAM::Role"
+      Properties:
+        RoleName: node-pdf-toolkit-${self:provider.stage}-Lambda-Role
+        AssumeRolePolicyDocument:
+          Version: "2012-10-17"
+          Statement:
+            - Action:
+                - "sts:AssumeRole"
+              Effect: "Allow"
+              Principal:
+                Service:
+                  - "lambda.amazonaws.com"
+        ManagedPolicyArns:
+          - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+          - arn:aws:iam::aws:policy/AmazonS3FullAccess
+          - arn:aws:iam::aws:policy/AmazonRDSFullAccess
+        Policies:
+          - PolicyDocument:
+              Version: "2012-10-17"
+              Statement:
+                - Action:
+                    - "ssm:GetParameters"
+                    - "ssm:GetParameter"
+                  Effect: "Allow"
+                  Resource:
+                    - "*"
+            PolicyName: " node-pdf-toolkit-${self:provider.stage}-lambda-policy"
+
+    SqsQueue:
+      Type: "AWS::SQS::Queue"
+      Properties:
+        QueueName: ${self:provider.environment.SQS_QUEUE}
+        VisibilityTimeout: 1200
+        ReceiveMessageWaitTimeSeconds: 20
+        RedrivePolicy:
+          deadLetterTargetArn:
+            "Fn::GetAtt": [SqsQueueDLQ, Arn]
+          maxReceiveCount: 5
+
+    SqsQueueDLQ:
+      Type: "AWS::SQS::Queue"
+      Properties:
+        QueueName: ${self:provider.environment.SQS_QUEUE}-dlq
+        VisibilityTimeout: 900
+
+custom:
+  env:
+    prod:
+      ENV_KEY: prod
